@@ -1,9 +1,11 @@
 package post
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -73,7 +75,22 @@ func CreatePostHandler(c *gin.Context) {
 		hashtags = append(hashtags, hashtag)
 	}
 
-	// Ürünleri oluştur
+	// Önce post'u oluştur (ürünlerin tracking URL'lerinde post ID'ye ihtiyacımız var)
+	post := models.Post{
+		UserID:      currentUser.ID,
+		ImageURL:    input.ImageURL,
+		Description: input.Description,
+		Categories:  categories,
+		Hashtags:    hashtags,
+	}
+
+	if err := tx.Create(&post).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create post"})
+		return
+	}
+
+	// Şimdi ürünleri oluştur ve tracking URL'lerini ekle
 	var products []models.Product
 	for _, p := range input.Products {
 		var productCategories []models.Category
@@ -90,21 +107,45 @@ func CreatePostHandler(c *gin.Context) {
 			Description: p.Description,
 			Categories:  productCategories,
 		}
+
+		// Önce ürünü oluştur
+		if err := tx.Create(&product).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create product"})
+			return
+		}
+
+		// Affiliate link oluştur
+		affiliateLink := models.AffiliateLink{
+			UserID:      currentUser.ID,
+			PostID:      post.ID,
+			ProductID:   product.ID,
+			OriginalURL: product.Link,
+			TrackingURL: fmt.Sprintf("https://comfyn.com/go/cmf_%d_%d_%d", currentUser.ID, post.ID, product.ID),
+		}
+
+		if err := tx.Create(&affiliateLink).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create affiliate link"})
+			return
+		}
+
+		// Product'a tracking URL'i ekle
+		product.TrackingURL = affiliateLink.TrackingURL
+		if err := tx.Save(&product).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update product"})
+			return
+		}
+
 		products = append(products, product)
 	}
 
-	post := models.Post{
-		UserID:      currentUser.ID,
-		ImageURL:    input.ImageURL,
-		Description: input.Description,
-		Categories:  categories,
-		Products:    products,
-		Hashtags:    hashtags,
-	}
-
-	if err := tx.Create(&post).Error; err != nil {
+	// Post'a ürünleri ekle
+	post.Products = products
+	if err := tx.Save(&post).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create post"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update post with products"})
 		return
 	}
 
@@ -127,7 +168,6 @@ func CreatePostHandler(c *gin.Context) {
 		"post":    post.Response(),
 	})
 }
-
 func ListPostsHandler(c *gin.Context) {
 	var posts []models.Post
 
@@ -764,5 +804,98 @@ func UpdatePostHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Post updated successfully",
 		"post":    post.Response(),
+	})
+}
+
+func RedirectHandler(c *gin.Context) {
+	trackingID := c.Param("tracking_id") // cmf_3_7_12 gibi bir değer alacağız
+
+	// tracking_id'den bilgileri parse et
+	parts := strings.Split(trackingID, "_")
+	if len(parts) != 4 || parts[0] != "cmf" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid tracking ID"})
+		return
+	}
+
+	// Affiliate linki bul
+	var affiliateLink models.AffiliateLink
+	if err := database.DB.Where(
+		"user_id = ? AND post_id = ? AND product_id = ?",
+		parts[1], parts[2], parts[3],
+	).First(&affiliateLink).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Link not found"})
+		return
+	}
+
+	// Transaction başlat
+	tx := database.DB.Begin()
+
+	// Click log oluştur
+	clickLog := models.ClickLog{
+		AffiliateLinkID: affiliateLink.ID,
+		IP:              c.ClientIP(),
+		UserAgent:       c.Request.UserAgent(),
+		RefererURL:      c.Request.Referer(),
+	}
+
+	// Eğer giriş yapmış bir kullanıcı tıkladıysa
+	if user, exists := c.Get("user"); exists {
+		currentUser := user.(models.User)
+		clickLog.UserID = &currentUser.ID
+	}
+
+	// Click logu kaydet
+	if err := tx.Create(&clickLog).Error; err != nil {
+		tx.Rollback()
+		log.Printf("Failed to create click log: %v", err)
+		// Log hatası olsa bile yönlendirmeye devam et
+	}
+
+	// Tıklanma sayısını artır
+	if err := tx.Model(&affiliateLink).
+		Update("click_count", gorm.Expr("click_count + ?", 1)).
+		Error; err != nil {
+		tx.Rollback()
+		log.Printf("Failed to update click count: %v", err)
+	}
+
+	tx.Commit()
+
+	// Orijinal URL'e yönlendir
+	c.Redirect(http.StatusTemporaryRedirect, affiliateLink.OriginalURL)
+}
+
+func GetClickStatsHandler(c *gin.Context) {
+	user, _ := c.Get("user")
+	currentUser := user.(models.User)
+
+	var links []models.AffiliateLink
+	if err := database.DB.Where("user_id = ?", currentUser.ID).
+		Preload("Product").
+		Preload("Post").
+		Preload("ClickLogs", func(db *gorm.DB) *gorm.DB {
+			return db.Order("created_at DESC").Limit(10) // Son 10 tıklama
+		}).
+		Find(&links).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch click stats"})
+		return
+	}
+
+	stats := make([]map[string]interface{}, len(links))
+	for i, link := range links {
+		stats[i] = map[string]interface{}{
+			"trackingUrl":     link.TrackingURL,
+			"originalUrl":     link.OriginalURL,
+			"productName":     link.Product.Name,
+			"postDescription": link.Post.Description,
+			"clickCount":      link.ClickCount,
+			"recentClicks":    link.ClickLogs,
+			"createdAt":       link.CreatedAt,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"stats":      stats,
+		"totalLinks": len(links),
 	})
 }

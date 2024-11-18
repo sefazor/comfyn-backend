@@ -26,13 +26,24 @@ type Post struct {
 }
 
 func (post *Post) Response() map[string]interface{} {
+	productsResponse := make([]map[string]interface{}, len(post.Products))
+	for i, product := range post.Products {
+		productsResponse[i] = map[string]interface{}{
+			"id":          product.ID,
+			"name":        product.Name,
+			"price":       product.Price,
+			"link":        product.Link,
+			"trackingUrl": product.TrackingURL,
+			"description": product.Description,
+		}
+	}
+
 	return map[string]interface{}{
 		"id":           post.ID,
 		"user":         post.User.SafeResponse(),
 		"imageUrl":     post.ImageURL,
 		"description":  post.Description,
-		"viewCount":    post.ViewCount,
-		"products":     post.Products,
+		"products":     productsResponse,
 		"categories":   post.Categories,
 		"hashtags":     post.Hashtags,
 		"likeCount":    len(post.Likes),

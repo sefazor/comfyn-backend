@@ -1,4 +1,3 @@
-// internal/models/affiliate_link.go
 package models
 
 import (
@@ -19,7 +18,8 @@ type AffiliateLink struct {
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 
-	User    User    `gorm:"foreignkey:UserID"`
-	Post    Post    `gorm:"foreignkey:PostID"`
-	Product Product `gorm:"foreignkey:ProductID"`
+	User      User       `gorm:"foreignkey:UserID"`
+	Post      Post       `gorm:"foreignkey:PostID"`
+	Product   Product    `gorm:"foreignkey:ProductID"`
+	ClickLogs []ClickLog `gorm:"foreignKey:AffiliateLinkID"`
 }

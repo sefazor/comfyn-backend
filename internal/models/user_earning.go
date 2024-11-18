@@ -1,3 +1,12 @@
+// internal/models/user_earning.go
+package models
+
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
+
 type PaymentStatus string
 
 const (

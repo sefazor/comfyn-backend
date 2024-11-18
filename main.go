@@ -61,6 +61,8 @@ func main() {
 		protected.PUT("/notifications/preferences", notification.UpdateNotificationPreferencesHandler)
 		protected.GET("/analytics/links", link.GetLinkAnalyticsHandler)
 
+		protected.GET("/analytics/clicks", post.GetClickStatsHandler)
+
 	}
 
 	log.Printf("Server starting on :8080")

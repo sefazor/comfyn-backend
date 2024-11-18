@@ -69,7 +69,9 @@ func InitDB() {
 		&models.Hashtag{},
 		&models.Notification{},
 		&models.NotificationPreference{},
-		&models.PostView{}, // Bu satırı ekledik
+		&models.PostView{},
+		&models.AffiliateLink{},
+		&models.ClickLog{},
 	); err != nil {
 		log.Printf("Warning: Migration issues: %v", err)
 	} else {
